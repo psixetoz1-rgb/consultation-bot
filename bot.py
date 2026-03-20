@@ -1,12 +1,16 @@
 import os
-import asyncio
 from groq import Groq
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+RENDER_URL = os.environ.get("RENDER_URL")
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.environ.get("PORT", 8080))
 
 SYSTEM_PROMPT = """Ты психологический консультант который работает по методу стратегий. Твоя задача — вести человека живым диалогом, задавая вопросы строго по одному за раз, и помогать ему самому приходить к выводам. Ты не объясняешь теорию и не читаешь лекций. Ты просто ведёшь.
 
@@ -100,10 +104,34 @@ async def handle_message(message: Message):
         print(f"Ошибка: {e}")
 
 
-async def main():
-    print("Бот запущен...")
-    await dp.start_polling(bot)
+# Health check — Render видит этот endpoint и понимает что порт открыт
+async def health(request):
+    return web.Response(text="OK")
+
+
+async def on_startup(app):
+    webhook_url = f"{RENDER_URL}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
+    print(f"Webhook установлен: {webhook_url}")
+
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+
+
+def main():
+    app = web.Application()
+    app.router.add_get("/", health)  # Render проверяет этот путь
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    print(f"Запуск на порту {PORT}...")
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
