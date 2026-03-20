@@ -1,8 +1,9 @@
 import os
 import asyncio
 from groq import Groq
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+from aiogram.filters import CommandStart, Command
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -54,24 +55,27 @@ SYSTEM_PROMPT = """Ты психологический консультант к
 — Веди тепло но прямо. Отвечай коротко — один вопрос за раз."""
 
 user_histories = {}
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher()
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_histories[user_id] = []
-    await update.message.reply_text("Что сейчас беспокоит или что хочется разобрать?")
+@dp.message(CommandStart())
+async def start(message: Message):
+    user_histories[message.from_user.id] = []
+    await message.answer("Что сейчас беспокоит или что хочется разобрать?")
 
 
-async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_histories[user_id] = []
-    await update.message.reply_text("Начнём заново. Что беспокоит?")
+@dp.message(Command("reset"))
+async def reset(message: Message):
+    user_histories[message.from_user.id] = []
+    await message.answer("Начнём заново. Что беспокоит?")
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_text = update.message.text
+@dp.message(F.text)
+async def handle_message(message: Message):
+    user_id = message.from_user.id
+    user_text = message.text
 
     if user_id not in user_histories:
         user_histories[user_id] = []
@@ -79,30 +83,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_histories[user_id].append({"role": "user", "content": user_text})
     history = user_histories[user_id][-30:]
 
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
     try:
-        response = client.chat.completions.create(
+        response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             max_tokens=1000,
             messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history
         )
         reply = response.choices[0].message.content
         user_histories[user_id].append({"role": "assistant", "content": reply})
-        await update.message.reply_text(reply)
+        await message.answer(reply)
 
     except Exception as e:
-        await update.message.reply_text("Что-то пошло не так. Попробуй ещё раз или напиши /start")
+        await message.answer("Что-то пошло не так. Попробуй ещё раз или напиши /start")
         print(f"Ошибка: {e}")
 
 
 async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Бот запущен...")
-    await app.run_polling()
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
